@@ -425,7 +425,9 @@ fn n18_section_reference_changed() {
     };
     // Section 1's own header (2) now aliases the last section's (1); part 2 becomes unreached.
     let a = build(2);
-    assert!(!matches!(verdict(&a, &build(1)), Ok(Equivalence::Equivalent(_))));
+    // Exact: last section pairs 1↔1 first, then the section paragraph's 2↔1 merges (without the
+    // paragraph-section traversal this would be `Err(UnreachablePart)` instead).
+    assert_eq!(different(&a, &build(1)), Difference::Merge { reopened: 1 });
     // Tracked section change (`fmt_change.old`) carries references too.
     let mut x = build(2);
     let mut y = build(2);
@@ -573,11 +575,13 @@ fn nested_group_retarget_and_note_kind_substitution() {
 /// enforced (iteratively), and the reference inside the deepest level is still compared.
 #[test]
 fn deep_tables_and_section_change_chains_are_bounded() {
-    // A table nested 20 deep; the innermost cell's section references header part `h`.
-    let tables = |h: u32| {
+    // A table nested 20 deep. The last section's header is part `root`; the innermost cell's
+    // section references part `inner`. Parts 1 and 2 have identical content (distinct identity),
+    // so only the reference topology can tell them apart.
+    let tables = |root: u32, inner: u32| {
         let mut p = Paragraph::with_text("deep", CharProps::default());
         let mut s = SectionProps::default();
-        s.headers.default = Some(h);
+        s.headers.default = Some(inner);
         p.section = Some(Box::new(s));
         let mut blocks = vec![para_block(p)];
         for _ in 0..20 {
@@ -586,16 +590,22 @@ fn deep_tables_and_section_change_chains_are_bounded() {
             blocks = vec![Arc::new(Block::Table(t)), para("")];
         }
         let mut d = Document::new();
-        d.parts.insert(1, part(PartKind::Header, "H1"));
-        d.parts.insert(2, part(PartKind::Header, "H2"));
-        d.last_section.headers.default = Some(if h == 1 { 2 } else { 1 });
+        d.parts.insert(1, part(PartKind::Header, "H"));
+        d.parts.insert(2, part(PartKind::Header, "H"));
+        d.last_section.headers.default = Some(root);
         d.body = blocks;
         d
     };
-    let a = tables(1);
+    let a = tables(1, 2);
     assert!(roundtrip_equivalent(&a, &a.clone()).unwrap());
-    // The innermost reference points at the other part: detected 20 levels down.
-    assert!(!roundtrip_equivalent(&a, &tables(2)).unwrap());
+    // The permutation is accepted 20 levels down as well.
+    let Equivalence::Equivalent(map) = verdict(&a, &tables(2, 1)).unwrap() else { panic!() };
+    assert_eq!(map.iter().collect::<Vec<_>>(), vec![(1, 2), (2, 1)]);
+    // Only the innermost reference changes (it now aliases the root header; part 2 is left
+    // unreferenced, so the part count is equal and every earlier comparison is identical). The
+    // exact `Merge` can only come from comparing that deepest reference: without the cell
+    // traversal the result would be `Err(UnreachablePart)` instead.
+    assert_eq!(different(&a, &tables(1, 1)), Difference::Merge { reopened: 1 });
     let shallow = RoundTripLimits { max_depth: 5, ..Default::default() };
     assert_eq!(compare_roundtrip(&a, &a.clone(), &shallow), Err(RoundTripError::LimitExceeded));
 
