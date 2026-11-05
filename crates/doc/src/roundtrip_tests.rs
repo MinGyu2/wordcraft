@@ -431,6 +431,9 @@ fn n18_section_reference_changed() {
     // Tracked section change (`fmt_change.old`) carries references too.
     let mut x = build(2);
     let mut y = build(2);
+    // The change's revision record (index 0) exists on both sides.
+    x.revisions = vec![crate::Revision::default()];
+    y.revisions = vec![crate::Revision::default()];
     let mut old = SectionProps::default();
     old.headers.default = Some(1);
     if let Block::Para(p) = Arc::make_mut(&mut x.body[0]) {
@@ -619,6 +622,7 @@ fn deep_tables_and_section_change_chains_are_bounded() {
         let mut d = Document::new();
         d.parts.insert(1, part(PartKind::Header, "H"));
         d.last_section = old;
+        d.revisions = vec![crate::Revision::default(); 20];
         d
     };
     let a = chain(1);
@@ -657,4 +661,95 @@ fn non_part_identifiers_are_not_remapped() {
     let mut b3 = permuted();
     with_perm(&mut b3, 4); // 4 is A.note: a valid *part* id, but not this permission range.
     assert_eq!(different(&a2, &b3), Difference::Field("inline object"));
+}
+
+// ---- revision indices (one-to-one, by value) ----
+
+fn rec(kind: crate::RevisionKind, author: &str) -> crate::Revision {
+    crate::Revision::new(kind, author, "2026-11-05T00:00:00Z")
+}
+
+/// Paragraphs whose single runs carry `(ins, del)` revision indices, with `revisions` records.
+fn tracked(runs: &[(Option<u32>, Option<u32>)], revisions: Vec<crate::Revision>) -> Document {
+    let mut d = Document::new();
+    d.body = runs.iter().map(|(ins, del)| para_block(Paragraph::with_text("t", CharProps { ins: *ins, del: *del, ..Default::default() }))).collect();
+    d.revisions = revisions;
+    d
+}
+
+#[test]
+fn revision_indices_are_paired_one_to_one_by_value() {
+    use crate::RevisionKind::{Delete, Insert};
+    let (i, x) = (rec(Insert, "A"), rec(Delete, "A"));
+    // Creation order (insert 0, delete 1) vs document order (delete 0, insert 1).
+    let a = tracked(&[(None, Some(1)), (Some(0), None)], vec![i.clone(), x.clone()]);
+    let b = tracked(&[(None, Some(0)), (Some(1), None)], vec![x.clone(), i.clone()]);
+    assert!(roundtrip_equivalent(&a, &b).unwrap());
+    // Shared revision on two sites stays shared.
+    let a2 = tracked(&[(Some(1), None), (Some(1), None)], vec![x.clone(), i.clone()]);
+    let b2 = tracked(&[(Some(0), None), (Some(0), None)], vec![i.clone()]);
+    assert!(roundtrip_equivalent(&a2, &b2).unwrap(), "unreferenced authoritative record 0 is not a difference");
+    // Split: one authoritative revision becomes two reopened ones.
+    let b3 = tracked(&[(Some(0), None), (Some(1), None)], vec![i.clone(), i.clone()]);
+    assert_eq!(different(&a2, &b3), Difference::RevisionMapping { authoritative: 1, reopened: 1 });
+    // Merge: two authoritative revisions become one.
+    let a4 = tracked(&[(Some(0), None), (Some(1), None)], vec![i.clone(), i.clone()]);
+    assert_eq!(different(&a4, &b2), Difference::RevisionMapping { authoritative: 1, reopened: 0 });
+    // Different record content.
+    let b5 = tracked(&[(None, Some(0)), (Some(1), None)], vec![x.clone(), rec(Insert, "B")]);
+    assert_eq!(different(&a, &b5), Difference::Field("revision"));
+    let b6 = tracked(&[(None, Some(0)), (Some(1), None)], vec![x.clone(), rec(Delete, "A")]);
+    assert_eq!(different(&a, &b6), Difference::Field("revision"));
+    // Tracked vs untracked text.
+    let b7 = tracked(&[(None, Some(0)), (None, None)], vec![x.clone()]);
+    assert_eq!(different(&a, &b7), Difference::ReferencePresence("tracked insertion"));
+    // Insertion read back as deletion.
+    let b8 = tracked(&[(None, Some(0)), (None, Some(1))], vec![x.clone(), i.clone()]);
+    assert_eq!(different(&a, &b8), Difference::ReferencePresence("tracked insertion"));
+    // A reopened record no site references.
+    let b9 = tracked(&[(None, Some(0)), (Some(1), None)], vec![x.clone(), i.clone(), rec(Insert, "C")]);
+    assert_eq!(different(&a, &b9), Difference::ExtraRevision { reopened: 2 });
+    // Dangling indices are never equivalence.
+    let bad = tracked(&[(None, Some(5)), (Some(0), None)], vec![i.clone()]);
+    assert!(matches!(verdict(&bad, &b), Err(RoundTripError::DanglingRevision { side: Side::Authoritative, index: 5 })));
+    assert!(matches!(verdict(&a, &bad), Err(RoundTripError::DanglingRevision { side: Side::Reopened, .. })));
+    // Other text with the same revisions is still different.
+    let mut b10 = b.clone();
+    if let Block::Para(p) = Arc::make_mut(&mut b10.body[0]) {
+        *p = Paragraph::with_text("u", CharProps { del: Some(0), ..Default::default() });
+    }
+    assert_eq!(different(&a, &b10), Difference::Field("paragraph"));
+}
+
+#[test]
+fn property_change_revisions_are_paired_everywhere() {
+    use crate::RevisionKind::{Format, Insert};
+    use crate::props::{NumChange, ParaProps, TableProps};
+    let (f, i) = (rec(Format, "A"), rec(Insert, "A"));
+    let build = |fmt: u32, num: u32, ins: u32, revisions: Vec<crate::Revision>, old_bold: bool| {
+        let mut d = Document::new();
+        let mut p = Paragraph::with_text("t", CharProps::default());
+        p.props = ParaProps {
+            fmt_change: PropChange::boxed(fmt, ParaProps::default()),
+            num_change: Some(Box::new(NumChange { rev: num, original: "1.".into() })),
+            ..Default::default()
+        };
+        p.mark = CharProps { ins: Some(ins), ..Default::default() };
+        let mut q = Paragraph::with_text("r", CharProps::default());
+        q.runs[0].props.fmt_change = PropChange::boxed(fmt, CharProps { bold: Some(old_bold), ..Default::default() });
+        let mut t = Table::new(1, 1, 100.0);
+        t.props = TableProps { fmt_change: PropChange::boxed(fmt, TableProps::default()), ..t.props.clone() };
+        d.body = vec![para_block(p), para_block(q), Arc::new(Block::Table(t))];
+        d.revisions = revisions;
+        d
+    };
+    let a = build(0, 1, 2, vec![f.clone(), f.clone(), i.clone()], true);
+    let b = build(2, 0, 1, vec![f.clone(), i.clone(), f.clone()], true);
+    assert!(roundtrip_equivalent(&a, &b).unwrap());
+    // The old value is compared.
+    let c = build(2, 0, 1, vec![f.clone(), i.clone(), f.clone()], false);
+    assert_eq!(different(&a, &c), Difference::Field("tracked formatting"));
+    // One formatting revision on four sites vs a mapping that breaks consistency.
+    let d = build(0, 0, 1, vec![f.clone(), i.clone()], true);
+    assert!(matches!(different(&a, &d), Difference::RevisionMapping { .. }));
 }

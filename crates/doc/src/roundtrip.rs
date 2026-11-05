@@ -33,6 +33,17 @@
 //!   nested groups included;
 //! - `TextBody::next` of a part (Create Link continuation box).
 //!
+//! # Revision indices
+//!
+//! `Document::revisions` indices (`CharProps::ins`/`del`, every `PropChange::rev` of run,
+//! paragraph-mark, paragraph, numbering, table, row, cell and section changes) are allocation
+//! artefacts too: the model numbers them in creation order, a reader in document order. They are
+//! paired the same way as part ids: each index site extends a one-to-one map
+//! `authoritative index ↔ reopened index`, and paired records must be equal by value (kind,
+//! author, date, move name). A split or merge is a difference. Every reopened record must be
+//! referenced; an authoritative record no site references (left behind when a tracked insertion
+//! is itself deleted) carries no content and is not written, so it is not a difference.
+//!
 //! The walk destructures every struct and enum on the way to these sites without `..`, so a field
 //! or variant added to the model later fails to compile here until it is classified.
 //!
@@ -45,8 +56,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::para::Run;
 use crate::para::{GroupChild, NoteKind};
-use crate::props::PropChange;
+use crate::props::{CellProps, CharProps, NumChange, ParaProps, PropChange, RowProps, TableProps};
 use crate::section::HeaderSet;
 use crate::{Block, Blocks, Cell, Comment, Document, InlineObject, NoteSeparators, Paragraph, Part, PartKind, Row, SectionProps, Table, TextBody};
 
@@ -66,6 +78,8 @@ pub enum RoundTripError {
     UnexpectedPartKind { side: Side, id: u32, expected: PartKind, found: PartKind },
     #[error("authoritative part {id} is not reachable from any stable root")]
     UnreachablePart { id: u32 },
+    #[error("{side:?} document references missing revision {index}")]
+    DanglingRevision { side: Side, index: u32 },
     #[error("round-trip comparison limit exceeded")]
     LimitExceeded,
     #[error("round-trip comparison could not allocate")]
@@ -87,6 +101,10 @@ pub enum Difference {
     Merge { reopened: u32 },
     /// A reopened part no reference in the authoritative document corresponds to.
     ExtraPart { reopened: u32 },
+    /// Two revision index sites of one document correspond to different revisions of the other.
+    RevisionMapping { authoritative: u32, reopened: u32 },
+    /// A reopened revision record no site references.
+    ExtraRevision { reopened: u32 },
 }
 
 /// The verified one-to-one correspondence `authoritative part id → reopened part id`.
@@ -144,6 +162,8 @@ pub fn compare_roundtrip(authoritative: &Document, reopened: &Document, limits: 
         b: reopened,
         fwd: BTreeMap::new(),
         bwd: BTreeMap::new(),
+        rfwd: BTreeMap::new(),
+        rbwd: BTreeMap::new(),
         work: Vec::new(),
         objects: Vec::new(),
         steps: 0,
@@ -196,6 +216,8 @@ struct Cmp<'d> {
     b: &'d Document,
     fwd: BTreeMap<u32, u32>,
     bwd: BTreeMap<u32, u32>,
+    rfwd: BTreeMap<u32, u32>,
+    rbwd: BTreeMap<u32, u32>,
     work: Vec<Work<'d>>,
     objects: Vec<(&'d InlineObject, &'d InlineObject, u32)>,
     steps: u64,
@@ -230,7 +252,7 @@ impl<'d> Cmp<'d> {
             comments: _,
             styles,
             numbering,
-            revisions,
+            revisions: _,
             settings,
             core,
             sources,
@@ -242,7 +264,6 @@ impl<'d> Cmp<'d> {
         } = a;
         check(*styles == b.styles, "styles")?;
         check(*numbering == b.numbering, "numbering")?;
-        check(*revisions == b.revisions, "revisions")?;
         check(*settings == b.settings, "settings")?;
         check(*core == b.core, "core")?;
         check(*sources == b.sources, "sources")?;
@@ -267,7 +288,81 @@ impl<'d> Cmp<'d> {
         if let Some(id) = b.parts.keys().find(|id| !self.bwd.contains_key(id)) {
             return diff(Difference::ExtraPart { reopened: *id });
         }
-        Ok(())
+        if let Some(i) = (0..b.revisions.len()).find_map(|i| u32::try_from(i).ok().filter(|i| !self.rbwd.contains_key(i))) {
+            return diff(Difference::ExtraRevision { reopened: i });
+        }
+        check(u32::try_from(b.revisions.len()).is_ok(), "revision count")
+    }
+
+    /// Pair revision index `x` (authoritative) with `y` (reopened): equal records, one-to-one.
+    fn rev(&mut self, x: u32, y: u32) -> Step {
+        self.tick()?;
+        let Some(ra) = self.a.revisions.get(x as usize) else {
+            return fail(RoundTripError::DanglingRevision { side: Side::Authoritative, index: x });
+        };
+        let Some(rb) = self.b.revisions.get(y as usize) else { return fail(RoundTripError::DanglingRevision { side: Side::Reopened, index: y }) };
+        check(ra == rb, "revision")?;
+        match (self.rfwd.get(&x).copied(), self.rbwd.get(&y).copied()) {
+            (Some(m), Some(n)) if m == y && n == x => Ok(()),
+            (None, None) => {
+                self.rfwd.insert(x, y);
+                self.rbwd.insert(y, x);
+                Ok(())
+            }
+            _ => diff(Difference::RevisionMapping { authoritative: x, reopened: y }),
+        }
+    }
+
+    fn opt_rev(&mut self, x: Option<u32>, y: Option<u32>, what: &'static str) -> Step {
+        match (x, y) {
+            (None, None) => Ok(()),
+            (Some(x), Some(y)) => self.rev(x, y),
+            _ => diff(Difference::ReferencePresence(what)),
+        }
+    }
+
+    /// A tracked property change: presence, its revision, and its `old` value (compared by value,
+    /// with any revision index of its own compared literally — the model keeps none there).
+    fn change<T: PartialEq>(&mut self, x: &Option<Box<PropChange<T>>>, y: &Option<Box<PropChange<T>>>, what: &'static str) -> Step {
+        match (x, y) {
+            (None, None) => Ok(()),
+            (Some(p), Some(q)) => {
+                let PropChange { rev, old } = &**p;
+                check(*old == q.old, what)?;
+                self.rev(*rev, q.rev)
+            }
+            _ => diff(Difference::ReferencePresence(what)),
+        }
+    }
+
+    /// Character properties up to revision indices, which are paired.
+    fn char_props(&mut self, c: &CharProps, d: &CharProps) -> Step {
+        if c.ins.is_none() && c.del.is_none() && c.fmt_change.is_none() && d.ins.is_none() && d.del.is_none() && d.fmt_change.is_none() {
+            return check(c == d, "character properties");
+        }
+        let strip = |c: &CharProps| CharProps { ins: None, del: None, fmt_change: None, ..c.clone() };
+        check(strip(c) == strip(d), "character properties")?;
+        self.opt_rev(c.ins, d.ins, "tracked insertion")?;
+        self.opt_rev(c.del, d.del, "tracked deletion")?;
+        self.change(&c.fmt_change, &d.fmt_change, "tracked formatting")
+    }
+
+    fn para_props(&mut self, p: &ParaProps, q: &ParaProps) -> Step {
+        if p.fmt_change.is_none() && p.num_change.is_none() && q.fmt_change.is_none() && q.num_change.is_none() {
+            return check(p == q, "paragraph properties");
+        }
+        let strip = |p: &ParaProps| ParaProps { fmt_change: None, num_change: None, ..p.clone() };
+        check(strip(p) == strip(q), "paragraph properties")?;
+        self.change(&p.fmt_change, &q.fmt_change, "tracked paragraph formatting")?;
+        match (&p.num_change, &q.num_change) {
+            (None, None) => Ok(()),
+            (Some(m), Some(n)) => {
+                let NumChange { rev, original } = &**m;
+                check(*original == n.original, "tracked numbering")?;
+                self.rev(*rev, n.rev)
+            }
+            _ => diff(Difference::ReferencePresence("tracked numbering")),
+        }
     }
 
     /// Pair a reference site holding `x` (authoritative) with the one holding `y` (reopened).
@@ -339,7 +434,7 @@ impl<'d> Cmp<'d> {
                 (None, None) => return Ok(()),
                 (Some(p), Some(q)) => {
                     let PropChange { rev, old: _ } = &**p;
-                    check(*rev == q.rev, "section change revision")?;
+                    self.rev(*rev, q.rev)?;
                     depth = self.deeper(depth)?;
                     x = &p.old;
                     y = &q.old;
@@ -388,15 +483,21 @@ impl<'d> Cmp<'d> {
     }
 
     fn table(&mut self, t: &'d Table, u: &'d Table, depth: u32) -> Step {
-        check(same_fields!(Table { props, grid, controls } refs { rows }; t, u), "table")?;
+        check(same_fields!(Table { grid, controls } refs { rows, props }; t, u), "table")?;
+        check(TableProps { fmt_change: None, ..t.props.clone() } == TableProps { fmt_change: None, ..u.props.clone() }, "table")?;
+        self.change(&t.props.fmt_change, &u.props.fmt_change, "tracked table formatting")?;
         check(t.rows.len() == u.rows.len(), "table rows")?;
         let inner = self.deeper(depth)?;
         for (r, s) in t.rows.iter().zip(&u.rows) {
             self.tick()?;
-            check(same_fields!(Row { props, controls } refs { cells }; r, s), "table row")?;
+            check(same_fields!(Row { controls } refs { cells, props }; r, s), "table row")?;
+            check(RowProps { fmt_change: None, ..r.props.clone() } == RowProps { fmt_change: None, ..s.props.clone() }, "table row")?;
+            self.change(&r.props.fmt_change, &s.props.fmt_change, "tracked row formatting")?;
             check(r.cells.len() == s.cells.len(), "table cells")?;
             for (c, d) in r.cells.iter().zip(&s.cells) {
-                check(same_fields!(Cell { props, controls } refs { blocks }; c, d), "table cell")?;
+                check(same_fields!(Cell { controls } refs { blocks, props }; c, d), "table cell")?;
+                check(CellProps { fmt_change: None, ..c.props.clone() } == CellProps { fmt_change: None, ..d.props.clone() }, "table cell")?;
+                self.change(&c.props.fmt_change, &d.props.fmt_change, "tracked cell formatting")?;
                 self.push(Work::Blocks(&c.blocks, &d.blocks, inner))?;
             }
         }
@@ -405,7 +506,16 @@ impl<'d> Cmp<'d> {
 
     fn para(&mut self, p: &'d Paragraph, q: &'d Paragraph) -> Step {
         // `rev` is a cache counter, not part of `Paragraph`'s equality either.
-        check(same_fields!(Paragraph { text, runs, props, mark } refs { objects, section } ignore { rev }; p, q), "paragraph")?;
+        check(same_fields!(Paragraph { text } refs { objects, section, runs, props, mark } ignore { rev }; p, q), "paragraph")?;
+        check(p.runs.len() == q.runs.len(), "paragraph")?;
+        for (r, t) in p.runs.iter().zip(&q.runs) {
+            self.tick()?;
+            let Run { len, props } = r;
+            check(*len == t.len, "paragraph")?;
+            self.char_props(props, &t.props)?;
+        }
+        self.para_props(&p.props, &q.props)?;
+        self.char_props(&p.mark, &q.mark)?;
         check(p.objects.len() == q.objects.len(), "object count")?;
         for (o, r) in p.objects.iter().zip(&q.objects) {
             self.object(o, r)?;
