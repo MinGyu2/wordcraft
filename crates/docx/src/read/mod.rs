@@ -240,6 +240,7 @@ pub(crate) fn read_opened(pkg: &Package) -> Result<Document, DocxError> {
         r.doc.body = blocks;
         unstyle_toc_links(&mut r.doc);
         toc_field_to_heading(&mut r.doc.body);
+        empty_toc_range_to_field(&mut r.doc.body);
         if let Some(s) = body.child("w:sectPr") {
             r.doc.last_section = r.read_section(s, &rels);
         }
@@ -443,6 +444,53 @@ fn toc_field_to_heading(body: &mut Blocks) {
         if let Some(Block::Para(h)) = body.get_mut(i - 1).map(Arc::make_mut) {
             let end = h.len();
             let _ = h.insert_object(end, field, &props);
+        }
+    }
+}
+
+/// The writer's form of a TOC with no entries (the engine's heading paragraph holding an empty
+/// `TOC` field and no entry paragraphs after it): the field opens and closes, with nothing in
+/// between, at the end of the `TOCHeading` paragraph. Read it back as that empty field so the
+/// model survives export -> reopen. Only when the heading has no other TOC field, the empty range
+/// is the paragraph's last content, and the next block is not a TOC entry (entries would have
+/// carried the field, and static entry paragraphs must keep their explicit boundaries).
+fn empty_toc_range_to_field(body: &mut Blocks) {
+    let entry = |b: Option<&Arc<Block>>| {
+        b.and_then(|b| b.as_para())
+            .is_some_and(|p| p.section.is_none() && p.props.style.as_deref().is_some_and(|s| s.starts_with("TOC") && s != "TOCHeading"))
+    };
+    for i in 0..body.len() {
+        if entry(body.get(i + 1)) {
+            continue;
+        }
+        let Some(h) = body.get(i).and_then(|b| b.as_para()).filter(|p| p.props.style.as_deref() == Some("TOCHeading")) else { continue };
+        let tocs = h
+            .objects
+            .iter()
+            .filter(|o| matches!(o, InlineObject::Field { instr, .. } | InlineObject::FieldStart { instr, .. } if is_toc(instr)))
+            .count();
+        let n = h.objects.len();
+        if tocs != 1 || n < 2 {
+            continue;
+        }
+        let offsets = h.object_offsets();
+        let (Some(InlineObject::FieldStart { instr, locked }), Some(InlineObject::FieldEnd)) = (h.objects.get(n - 2), h.objects.get(n - 1)) else {
+            continue;
+        };
+        let (Some(&start), Some(&end)) = (offsets.get(n - 2), offsets.get(n - 1)) else { continue };
+        if !is_toc(instr) || start.checked_add(OBJ.len_utf8()) != Some(end) || end.checked_add(OBJ.len_utf8()) != Some(h.len()) {
+            continue;
+        }
+        let field = InlineObject::Field { instr: instr.clone(), result: String::new(), locked: *locked, code: false };
+        let props = h.props_of_char(start).clone();
+        // Applied to a copy: the paragraph changes only when both steps succeed.
+        let mut p = h.clone();
+        let len = p.len();
+        if p.delete(start, len).is_ok()
+            && p.insert_object(start, field, &props).is_ok()
+            && let Some(slot) = body.get_mut(i)
+        {
+            *slot = Arc::new(Block::Para(p));
         }
     }
 }

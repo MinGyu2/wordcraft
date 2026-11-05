@@ -175,3 +175,38 @@ fn section_break_keeps_an_explicit_range_and_toc_prefix_is_not_a_toc() {
         );
     }
 }
+
+#[test]
+fn empty_toc_range_at_the_end_of_its_heading_reads_as_the_engine_field() {
+    let heading = |inner: &str| format!(r#"<w:p><w:pPr><w:pStyle w:val="TOCHeading"/></w:pPr><w:r><w:t>Contents</w:t></w:r>{inner}</w:p>"#);
+    let after = r#"<w:p><w:r><w:t>Body.</w:t></w:r></w:p>"#;
+    let empty = format!("{}{END}", start(r#"TOC \o "1-3" \h"#));
+    // The writer's form of an entry-less TOC: an empty field (locked as written).
+    let doc = wordcraft_docx::read(&package(&format!("{}{after}", heading(&empty)))).unwrap();
+    let h = doc.body[0].as_para().unwrap();
+    assert_eq!(h.plain_text(), "Contents");
+    assert!(
+        matches!(h.objects.as_slice(), [InlineObject::Field { instr, result, locked: true, .. }] if instr == r#"TOC \o "1-3" \h"# && result.is_empty())
+    );
+    assert!(doc.field_ranges(StoryRef::Body).is_empty());
+    let again = wordcraft_docx::read(&wordcraft_docx::write(&doc).unwrap()).unwrap();
+    assert_eq!(again.body[0], doc.body[0]);
+
+    // Anything else keeps its explicit range: a result, trailing content, a following entry,
+    // another style, or a second TOC in the heading.
+    let entry = r#"<w:p><w:pPr><w:pStyle w:val="TOC1"/></w:pPr><w:r><w:t>Static</w:t></w:r></w:p>"#;
+    let with_result = format!(r#"{}<w:r><w:t>No entries</w:t></w:r>{END}"#, start("TOC"));
+    let trailing = format!(r#"{empty}<w:r><w:t>Tail</w:t></w:r>"#);
+    let two = format!("{empty}{empty}");
+    for body in [
+        format!("{}{after}", heading(&with_result)),
+        format!("{}{after}", heading(&trailing)),
+        format!("{}{entry}{after}", heading(&empty)),
+        format!("{}{after}", heading(&two)),
+        format!(r#"<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr>{empty}</w:p>{after}"#),
+    ] {
+        let doc = wordcraft_docx::read(&package(&body)).unwrap();
+        assert!(!doc.field_ranges(StoryRef::Body).is_empty(), "{body}");
+        assert!(!doc.body[0].as_para().unwrap().objects.iter().any(|o| matches!(o, InlineObject::Field { .. })), "{body}");
+    }
+}
