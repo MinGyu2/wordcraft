@@ -171,6 +171,8 @@ mod tests_bidi;
 #[cfg(test)]
 mod tests_fonts;
 #[cfg(test)]
+mod tests_roundtrip_equiv;
+#[cfg(test)]
 mod tests_typing;
 #[cfg(test)]
 mod tests_wordart;

@@ -35,6 +35,7 @@ pub mod numbering;
 pub mod para;
 pub mod props;
 pub mod resolve;
+pub mod roundtrip;
 pub mod section;
 pub mod smart_art;
 pub mod styles;
