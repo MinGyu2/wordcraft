@@ -27,7 +27,7 @@ use wordcraft_doc::{Block, Blocks, Comment, Document, InlineObject, Paragraph, P
 use crate::DocxError;
 use crate::package::{ContentTypes, EMBEDDED_PARTS, EmbeddedManifest, MAX_VBA_RELATED, Package, Rels, VBA_PROJECT_PART, VBA_RELATED, rel_is, rt};
 use crate::units::{flag, int, on_off, tw, u32_of};
-use crate::xml::El;
+use crate::xml::{El, Node};
 pub(crate) use props::PropCtx;
 use story::StoryCtx;
 
@@ -70,6 +70,9 @@ pub(crate) struct Reader<'p> {
     /// Reading a footnote or endnote separator or continuation notice (where the `w:separator`
     /// and `w:continuationSeparator` run elements belong).
     in_note_sep: bool,
+    /// Separator kinds already seen, per (footnotes, kind): the first of each kind counts even
+    /// when it is the default (read as `None`).
+    seen_note_seps: HashSet<(bool, &'static str)>,
     pub comment_map: HashMap<String, u32>,
     pub comments_ended: HashSet<u32>,
     pub bookmarks: HashMap<String, String>,
@@ -143,6 +146,7 @@ pub(crate) fn read_opened(pkg: &Package) -> Result<Document, DocxError> {
         endnotes: HashMap::new(),
         current_note: None,
         in_note_sep: false,
+        seen_note_seps: HashSet::new(),
         comment_map: HashMap::new(),
         comments_ended: HashSet::new(),
         bookmarks: HashMap::new(),
@@ -1098,13 +1102,18 @@ impl Reader<'_> {
     /// A document's own separator, continuation separator or continuation notice (`kind`, the
     /// note's `w:type`) for its footnotes or endnotes. The first of each kind counts.
     fn read_note_sep(&mut self, n: &El, rels: &Rels, foot: bool, kind: &str) {
-        let seps = if foot { &self.doc.footnote_separators } else { &self.doc.endnote_separators };
-        let taken = match kind {
-            "separator" => seps.separator.is_some(),
-            "continuationSeparator" => seps.continuation_separator.is_some(),
-            _ => seps.continuation_notice.is_some(),
+        let key = match kind {
+            "separator" => "separator",
+            "continuationSeparator" => "continuationSeparator",
+            _ => "continuationNotice",
         };
-        if taken {
+        if !self.seen_note_seps.insert((foot, key)) {
+            return;
+        }
+        // `None` is the default separator, which the writer emits as exactly this XML. Reading
+        // it back as `None` keeps the model stable across a round trip; anything else (other
+        // spacing, attributes, text, formatting) is the document's own and is kept.
+        if is_default_note_sep(n, key) {
             return;
         }
         let mut sc = StoryCtx::default();
@@ -1379,4 +1388,41 @@ fn read_protection(k: &El, s: &mut wordcraft_doc::Settings) {
         .iter()
         .filter_map(|n| k.attr(n).filter(|v| !v.is_empty() && v.len() <= 1024).map(|v| (n.to_string(), v.to_string())))
         .collect();
+}
+
+/// Whether a separator note is exactly the default the writer emits for a model without its own
+/// (`write/mod.rs`, notes): one paragraph whose only property is `w:spacing` `after=0`,
+/// `line=240`, `lineRule=auto`, and one run holding only the bare separator mark. No other
+/// element, attribute or text anywhere. The continuation notice has no default.
+fn is_default_note_sep(n: &El, kind: &str) -> bool {
+    let mark = match kind {
+        "separator" => "w:separator",
+        "continuationSeparator" => "w:continuationSeparator",
+        _ => return false,
+    };
+    // Exactly the given child elements and no non-blank text.
+    fn only<'a>(e: &'a El, names: &[&str]) -> Option<Vec<&'a El>> {
+        if e.kids.iter().any(|k| matches!(k, Node::Text(t) if !t.trim().is_empty())) {
+            return None;
+        }
+        let els: Vec<&El> = e.els().collect();
+        (els.len() == names.len() && els.iter().zip(names).all(|(e, n)| e.name == *n)).then_some(els)
+    }
+    let Some(para) = only(n, &["w:p"]) else { return false };
+    let Some(p) = para.first().copied() else { return false };
+    if !p.attrs.is_empty() {
+        return false;
+    }
+    let Some(parts) = only(p, &["w:pPr", "w:r"]) else { return false };
+    let [ppr, run] = parts.as_slice() else { return false };
+    let Some(spacing) = only(ppr, &["w:spacing"]) else { return false };
+    let Some(sp) = spacing.first() else { return false };
+    let mut attrs: Vec<(&str, &str)> = sp.attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    attrs.sort_unstable();
+    let Some(marks) = only(run, &[mark]) else { return false };
+    ppr.attrs.is_empty()
+        && sp.kids.is_empty()
+        && attrs == [("w:after", "0"), ("w:line", "240"), ("w:lineRule", "auto")]
+        && run.attrs.is_empty()
+        && marks.first().is_some_and(|m| m.attrs.is_empty() && m.kids.is_empty())
 }

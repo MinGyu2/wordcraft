@@ -317,3 +317,22 @@ fn real_reopened_model_rejects_semantic_changes() {
         assert!(!matches!(v, Ok(Equivalence::Equivalent(_))), "{name}: {v:?}");
     }
 }
+
+/// Notes inserted by the engine into a loaded document survive export → reopen → export:
+/// the default separators the writer adds read back as the model's `None` (default).
+#[test]
+fn engine_notes_round_trip_with_default_separators() {
+    for kind in ["references.footnote", "references.endnote"] {
+        let mut s = Session::new(reopen(&session().doc));
+        s.run("caret.set", &json!({"pos": Pos::body(0, 5)})).unwrap();
+        s.run(kind, &json!({"text": "Note words"})).unwrap();
+        assert!(s.doc.footnote_separators.is_empty() && s.doc.endnote_separators.is_empty());
+        let (reopened, _) = roundtrip(&s.doc);
+        assert!(reopened.footnote_separators.is_empty() && reopened.endnote_separators.is_empty(), "{kind}");
+        // A second note on the reopened model, round-tripped again.
+        let mut s = Session::new(reopened);
+        s.run("caret.set", &json!({"pos": Pos::body(1, 6)})).unwrap();
+        s.run(kind, &json!({"text": "Second note"})).unwrap();
+        roundtrip(&s.doc);
+    }
+}
