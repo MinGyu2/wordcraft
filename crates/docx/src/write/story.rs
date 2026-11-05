@@ -308,7 +308,25 @@ impl Writer<'_> {
             }
             match piece {
                 Piece::Obj(o, _) => {
+                    // Range markers live outside w:r, but CT_RunTrackChange also permits
+                    // them as children. Keep their revisions just like run content; the
+                    // reader already inherits RunCtx for these markers.
+                    let range_marker = matches!(
+                        o,
+                        InlineObject::BookmarkStart { .. }
+                            | InlineObject::BookmarkEnd { .. }
+                            | InlineObject::CommentStart { .. }
+                            | InlineObject::CommentEnd { .. }
+                            | InlineObject::PermStart { .. }
+                            | InlineObject::PermEnd { .. }
+                    );
+                    if range_marker {
+                        self.rev_open(w, props);
+                    }
                     self.object(w, o, props, rels, depth);
+                    if range_marker {
+                        self.rev_close(w, props);
+                    }
                     i += 1;
                 }
                 _ => {

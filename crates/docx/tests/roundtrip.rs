@@ -842,6 +842,26 @@ fn tracked_changes_round_trip() {
 }
 
 #[test]
+fn tracked_bookmark_markers_round_trip() {
+    use wordcraft_doc::roundtrip::{Equivalence, compare_roundtrip};
+    for (ins, del) in [(Some(0), None), (None, Some(1)), (Some(0), Some(1))] {
+        let mut d = Document::new();
+        d.revisions.push(Revision { kind: RevisionKind::Insert, author: "Alice".into(), date: String::new(), move_name: None });
+        d.revisions.push(Revision { kind: RevisionKind::Delete, author: "Bob".into(), date: String::new(), move_name: None });
+        let props = CharProps { ins, del, ..Default::default() };
+        let mut p = Paragraph::new();
+        p.insert_object(0, InlineObject::BookmarkStart { name: "_Toc1".into() }, &props).unwrap();
+        p.insert_text(p.len(), "heading", &CharProps::default()).unwrap();
+        p.insert_object(p.len(), InlineObject::BookmarkEnd { name: "_Toc1".into() }, &props).unwrap();
+        d.body = vec![para_block(p)];
+        let reopened = rt(&d);
+        assert!(matches!(compare_roundtrip(&d, &reopened, &Default::default()), Ok(Equivalence::Equivalent(_))), "{ins:?} {del:?}");
+        let second = rt(&reopened);
+        assert!(matches!(compare_roundtrip(&reopened, &second, &Default::default()), Ok(Equivalence::Equivalent(_))));
+    }
+}
+
+#[test]
 fn tracked_paragraph_marks_round_trip() {
     // Issue #229: an inserted / deleted paragraph mark is `w:ins` / `w:del` in the mark's
     // `w:rPr` (ECMA-376 §17.13.5.16, §17.13.5.15), alone or with mark formatting.
