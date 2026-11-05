@@ -568,3 +568,83 @@ fn nested_group_retarget_and_note_kind_substitution() {
     let bad = notes(1, 2, PartKind::Endnote, PartKind::Endnote);
     assert!(matches!(verdict(&bad, &bad.clone()), Err(RoundTripError::UnexpectedPartKind { .. })));
 }
+
+/// Audit gap (2nd pass): depth limits for table nesting and tracked section-change chains are
+/// enforced (iteratively), and the reference inside the deepest level is still compared.
+#[test]
+fn deep_tables_and_section_change_chains_are_bounded() {
+    // A table nested 20 deep; the innermost cell's section references header part `h`.
+    let tables = |h: u32| {
+        let mut p = Paragraph::with_text("deep", CharProps::default());
+        let mut s = SectionProps::default();
+        s.headers.default = Some(h);
+        p.section = Some(Box::new(s));
+        let mut blocks = vec![para_block(p)];
+        for _ in 0..20 {
+            let mut t = Table::default();
+            t.rows.push(Row { cells: vec![Cell { blocks, ..Cell::empty() }], ..Default::default() });
+            blocks = vec![Arc::new(Block::Table(t)), para("")];
+        }
+        let mut d = Document::new();
+        d.parts.insert(1, part(PartKind::Header, "H1"));
+        d.parts.insert(2, part(PartKind::Header, "H2"));
+        d.last_section.headers.default = Some(if h == 1 { 2 } else { 1 });
+        d.body = blocks;
+        d
+    };
+    let a = tables(1);
+    assert!(roundtrip_equivalent(&a, &a.clone()).unwrap());
+    // The innermost reference points at the other part: detected 20 levels down.
+    assert!(!roundtrip_equivalent(&a, &tables(2)).unwrap());
+    let shallow = RoundTripLimits { max_depth: 5, ..Default::default() };
+    assert_eq!(compare_roundtrip(&a, &a.clone(), &shallow), Err(RoundTripError::LimitExceeded));
+
+    // A tracked section-change chain 20 long; the oldest entry references a header.
+    let chain = |h: u32| {
+        let mut old = SectionProps::default();
+        old.headers.default = Some(h);
+        for rev in 0..20 {
+            old = SectionProps { fmt_change: PropChange::boxed(rev, old), ..Default::default() };
+        }
+        let mut d = Document::new();
+        d.parts.insert(1, part(PartKind::Header, "H"));
+        d.last_section = old;
+        d
+    };
+    let a = chain(1);
+    assert!(roundtrip_equivalent(&a, &a.clone()).unwrap());
+    assert_eq!(compare_roundtrip(&a, &a.clone(), &shallow), Err(RoundTripError::LimitExceeded));
+    let mut b = chain(1);
+    b.parts.insert(9, b.parts[&1].clone());
+    b.parts.remove(&1);
+    assert!(matches!(verdict(&a, &b), Err(RoundTripError::DanglingReference { side: Side::Reopened, id: 1 })));
+}
+
+/// `u32` identifiers that are not part ids are compared by value, never remapped: a permutation
+/// of part ids must not excuse a changed comment parent, drawing id or permission id.
+#[test]
+fn non_part_identifiers_are_not_remapped() {
+    let a = rich(A);
+    let mut b = permuted();
+    b.comments.get_mut(&0).unwrap().parent = Some(3);
+    assert_eq!(different(&a, &b), Difference::Field("comment"));
+    let mut b = permuted();
+    for o in &mut body_para(&mut b, 0).objects {
+        if let InlineObject::Shape { extra, .. } = o {
+            extra.id = 7;
+        }
+    }
+    assert_eq!(different(&a, &b), Difference::Field("shape"));
+    let with_perm = |d: &mut Document, id: u32| {
+        let p = body_para(d, 1);
+        assert!(p.insert_object(0, InlineObject::PermStart { id, group: "everyone".into(), editor: String::new() }, &CharProps::default()).is_ok());
+    };
+    let mut a2 = rich(A);
+    with_perm(&mut a2, 1);
+    let mut b2 = permuted();
+    with_perm(&mut b2, 1);
+    assert!(roundtrip_equivalent(&a2, &b2).unwrap());
+    let mut b3 = permuted();
+    with_perm(&mut b3, 4); // 4 is A.note: a valid *part* id, but not this permission range.
+    assert_eq!(different(&a2, &b3), Difference::Field("inline object"));
+}
