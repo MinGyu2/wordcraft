@@ -511,3 +511,60 @@ fn limits_are_errors_never_equivalence() {
     let shallow = RoundTripLimits { max_depth: 10, ..Default::default() };
     assert_eq!(compare_roundtrip(&d, &d.clone(), &shallow), Err(RoundTripError::LimitExceeded));
 }
+
+/// Audit gap: a text box reference inside a nested group, and a note reference whose part kind
+/// is substituted (footnote ↔ endnote), both under an otherwise valid permutation.
+#[test]
+fn nested_group_retarget_and_note_kind_substitution() {
+    use crate::para::GroupChild;
+    let build = |inner: u32, outer: u32| {
+        let mut d = Document::new();
+        d.parts.insert(1, part(PartKind::TextBox, "same"));
+        d.parts.insert(2, part(PartKind::TextBox, "same"));
+        let nested = InlineObject::Group {
+            w: 5.0,
+            h: 5.0,
+            float: Default::default(),
+            ch_w: 5.0,
+            ch_h: 5.0,
+            children: vec![GroupChild { x: 1.0, y: 1.0, obj: text_box(inner) }],
+            canvas: None,
+        };
+        let group = InlineObject::Group {
+            w: 10.0,
+            h: 10.0,
+            float: Default::default(),
+            ch_w: 10.0,
+            ch_h: 10.0,
+            children: vec![GroupChild { x: 0.0, y: 0.0, obj: nested }, GroupChild { x: 2.0, y: 2.0, obj: text_box(outer) }],
+            canvas: None,
+        };
+        d.body = vec![para_with("g", vec![(0, group)])];
+        d
+    };
+    let a = build(1, 2);
+    assert!(roundtrip_equivalent(&a, &build(2, 1)).unwrap(), "permuted, identical-text boxes");
+    // The nested member now shows the outer member's story: two distinct stories merged.
+    assert_eq!(different(&a, &build(2, 2)), Difference::Merge { reopened: 2 });
+
+    let notes = |foot: u32, end: u32, foot_kind: PartKind, end_kind: PartKind| {
+        let mut d = Document::new();
+        d.parts.insert(foot, part(foot_kind, "note"));
+        d.parts.insert(end, part(end_kind, "note"));
+        d.body = vec![para_with(
+            "ab",
+            vec![
+                (0, InlineObject::NoteRef { kind: NoteKind::Footnote, id: foot, custom: String::new() }),
+                (4, InlineObject::NoteRef { kind: NoteKind::Endnote, id: end, custom: String::new() }),
+            ],
+        )];
+        d
+    };
+    let a = notes(1, 2, PartKind::Footnote, PartKind::Endnote);
+    assert!(roundtrip_equivalent(&a, &notes(2, 1, PartKind::Footnote, PartKind::Endnote)).unwrap());
+    // Same ids and text, kinds exchanged in the reopened document.
+    assert!(matches!(different(&a, &notes(1, 2, PartKind::Endnote, PartKind::Footnote)), Difference::PartKind { .. }));
+    // An authoritative footnote reference to an endnote part can't be proven at all.
+    let bad = notes(1, 2, PartKind::Endnote, PartKind::Endnote);
+    assert!(matches!(verdict(&bad, &bad.clone()), Err(RoundTripError::UnexpectedPartKind { .. })));
+}
