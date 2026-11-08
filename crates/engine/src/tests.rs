@@ -3705,6 +3705,32 @@ fn word_2003_xml_saves_through_the_save_commands() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The file-access policy (`file_access` scanner): the Word 2003 sniff of a save target reads only
+/// the start of the file through `io::read_file_head`, which is bounded and honours the
+/// automation read root like every other path read.
+#[test]
+fn read_file_head_is_bounded_and_honours_the_read_root() {
+    let dir = std::env::temp_dir().join(format!("wordcraft-head-{}", std::process::id()));
+    let (inside, outside) = (dir.join("inside"), dir.join("outside"));
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let (a, b) = (inside.join("a.bin"), outside.join("b.bin"));
+    std::fs::write(&a, &bytes).unwrap();
+    std::fs::write(&b, &bytes).unwrap();
+    assert_eq!(crate::io::read_file_head(&a, 16).unwrap(), bytes[..16]);
+    assert_eq!(crate::io::read_file_head(&a, 1000).unwrap(), bytes);
+    assert!(crate::io::read_file_head(&a, 0).unwrap().is_empty());
+    let missing = inside.join("missing.xml");
+    assert!(crate::io::read_file_head(&missing, 16).unwrap_err().contains("missing.xml"));
+    let roots = crate::file_access::AutomationRoots::new(Some(&inside), None).unwrap();
+    crate::file_access::confine(roots.as_ref(), || {
+        assert_eq!(crate::io::read_file_head(&a, 8).unwrap(), bytes[..8]);
+        assert!(crate::io::read_file_head(&b, 8).is_err(), "outside the read root");
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// #146: the first/last column, total row and banded column regions apply in layout (later
 /// regions win: the total row's fill beats the first column's) and round-trip through .docx.
 #[test]

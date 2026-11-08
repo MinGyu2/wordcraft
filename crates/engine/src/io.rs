@@ -391,6 +391,20 @@ pub fn read_file(path: &str) -> Result<Vec<u8>, String> {
     Err(format!("{path}: files are opened through the browser on the web"))
 }
 
+/// The first `limit` bytes of the file at `path` (all of it when shorter), through the automation
+/// read root like [`read_file`]: for commands that only sniff a file's start (the root element of
+/// an `.xml` file being saved over), so a large file is not read whole.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_file_head(path: &std::path::Path, limit: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let shown = path.to_string_lossy();
+    crate::file_access::check_read(&shown)?;
+    let file = std::fs::File::open(path).map_err(|e| format!("{shown}: {e}"))?;
+    let mut head = Vec::new();
+    file.take(limit).read_to_end(&mut head).map_err(|e| format!("{shown}: {e}"))?;
+    Ok(head)
+}
+
 /// [`read_file`] for a file that must be a regular file of at most `max` bytes, checked before
 /// anything is read (a font named by the user, which could be any size).
 #[cfg(not(target_arch = "wasm32"))]

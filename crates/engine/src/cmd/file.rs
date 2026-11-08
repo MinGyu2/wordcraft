@@ -257,17 +257,8 @@ fn save(s: &mut Session, v: &Value) -> CmdResult {
 /// Does `path` hold a Word 2003 XML Document already (so a plain save keeps that format)?
 #[cfg(not(target_arch = "wasm32"))]
 fn is_word_2003_file(path: &std::path::Path) -> bool {
-    use std::io::Read;
-    if crate::file_access::check_read(&path.to_string_lossy()).is_err() {
-        return false;
-    }
-    let Ok(f) = std::fs::File::open(path) else { return false };
-    let mut head = Vec::new();
-    // The root element and its namespaces come first.
-    if f.take(64 * 1024).read_to_end(&mut head).is_err() {
-        return false;
-    }
-    wordcraft_docx::sniff_xml(&head) == wordcraft_docx::XmlKind::WordMl2003
+    // The root element and its namespaces come first. Unreadable or outside the read root: no.
+    crate::io::read_file_head(path, 64 * 1024).is_ok_and(|head| wordcraft_docx::sniff_xml(&head) == wordcraft_docx::XmlKind::WordMl2003)
 }
 
 #[cfg(target_arch = "wasm32")]
