@@ -1,6 +1,6 @@
 # Where WordCraft falls short of Word
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (sample-text formulas on Enter, #1067; previously trivial: #29: copied equations as MathML, OMML open as #1297, #816; previously trivial: the Font list no longer keeps every previewed font in memory, #848; previously trivial: table column and row markers on the rulers, #700; previously trivial: table borders and the resize handle drag on the page, #217; previously trivial: formatting revisions landed, #41; previously trivial: Draw Table and Eraser landed, #303; previously minor: beta distance restated: ~15 points, ~150–230 h; previously: first version; every known shortfall from the 2026-10-10 re-measure, ranked) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (supported tracked TOC heading-bookmark lifecycle; estimates unchanged; see ranked-gap history) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
@@ -80,6 +80,7 @@ The same gaps grouped the way the parity documents are, for agents working in on
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-08 | minor | Preserve heading bookmark boundaries used as TOC targets during supported tracked accept/reject; actual DOCX saves and reopens verified internally, estimates unchanged |
 | 2026-10-12 | trivial | Sample-text formulas on Enter (#1067) implemented; numerical limits not compared in Word |
 | 2026-10-12 | minor | Italian proofing landed (it-IT spelling from the installed Hunspell dictionary, accent-first suggestions, conservative grammar); gap #8 narrowed to the remaining languages |
 | 2026-10-12 | trivial | #2 narrowed: direct run-level `w:contentPart` InkML survives DOCX edits and repeated saves; nested group/canvas ink and native rendering remain |
@@ -157,3 +158,8 @@ The same gaps grouped the way the parity documents are, for agents working in on
 | 2026-10-10 | trivial | #307: Draw tab pens, eraser and Hide Ink landed; ink gap narrowed |
 | 2026-10-12 | trivial | #811: large-table scrolling fixed; performance gap (#20) narrowed |
 | 2026-10-12 | trivial | #13: radar, stock and other undrawn chart types show a placeholder instead of blank space (#998) |
+
+
+## 2026-11-08 progress note
+
+The tracked TOC bookmark lifecycle now supports the verified selected/all accept and reject paths, with two-round durable DOCX save/reopen checks. Malformed markers and TOC-target loss remain fail-closed. The baseline file-access scanner still fails the full engine test gate; the new local WordCraft source commit is not reproducible from a remote checkout in this environment (BLOCKED), and Word compatibility is NOT RUN. The ranked gap list and readiness estimate are unchanged. Consumer evidence: `geul docs/architecture/stage567-acceptance-2026-11-05.md#interoperability-repair-20261108`.

@@ -2,7 +2,7 @@
 
 **Stage: alpha** · next: beta, ~15 points (60% → 75% ready for real work) and ~150–230 h away
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (progress log: privacy options on save, #1062; previously trivial: progress log: equation pictures in theme colours on Windows, #1002; previously trivial: symbol fonts, #776; previously trivial: the save prompt answers from the keyboard, #861; previously trivial: table column and row markers on the rulers, #700; previously trivial: table borders and the resize handle drag on the page, #217; previously trivial: formatting revisions landed, #41; previously trivial: Draw tab ink, #307, and Draw Table and Eraser, #303, landed: catalog 402/434; previously minor: readiness table with hours per audience; full number back to the additive weighted sum, 60%; mainstream and essentials numbers added; alpha gate checked; previously major: full re-measure against Word for Mac 16.113.4; restructured to the craftrules progress-docs standard) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (supported tracked TOC heading-bookmark lifecycle; estimates unchanged; see progress log and roadmap history) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
@@ -287,6 +287,7 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-08 | minor | Preserve heading bookmark boundaries used as TOC targets during supported tracked accept/reject; actual DOCX saves and reopens verified internally, estimates unchanged |
 | 2026-10-12 | trivial | Progress log: VML text box margins, fit and alignment; hidden drawings |
 | 2026-10-13 | trivial | Progress log: comment balloon buttons work, empty comments can be deleted (#1085) |
 | 2026-10-12 | trivial | Progress log: sample-text formulas on Enter (#1067) |
@@ -381,3 +382,8 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 | 2026-10-10 | major | Full re-measure; restructured to the progress-docs standard (stage banner, two numbers, dimensions, languages, upcoming, progress log); parity tables moved to `docs/target-app-parity.md`, milestones to `docs/roadmap.md` |
 | 2026-10-09 | minor | Recently landed: RTL, Ukrainian and Brazilian Portuguese |
 | 2026-10-06 | major | First honest estimate: 88% catalog, ~62% real parity, alpha ~85% of the way |
+
+
+## 2026-11-08 tracked TOC progress
+
+WordCraft now preserves paired heading bookmark boundaries used as TOC targets for supported tracked-change resolution paths. Engine/adapter checks and eight durable DOCX saves with reopen and follow-up edits passed; malformed or target-losing cases remain refused. The full `cargo xtask ci` gate remains **FAIL** on the unchanged baseline file-access scanner test, despite the separate assets/layers/WASM gates passing. No readiness score is changed. The new local WordCraft source commit is not reproducible from a remote checkout in this environment; remote reproducibility is BLOCKED. Microsoft Word compatibility is NOT RUN. Consumer evidence: `geul docs/architecture/stage567-acceptance-2026-11-05.md#interoperability-repair-20261108`.

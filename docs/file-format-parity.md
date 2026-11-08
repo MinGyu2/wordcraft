@@ -1,6 +1,6 @@
 # File-format parity with Microsoft Word
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-13 · **Change:** trivial (VML text boxes keep their internal margins, fit to their text and vertical alignment; hidden drawings not shown; previously trivial: equations as MathML in HTML export, copy and paste, #816; previously trivial: symbol-font text exported as Unicode, #776; previously trivial: text-box margins, Resize shape to fit text and freeforms in groups, #743; previously trivial: formatted paste from the system clipboard's HTML and RTF, #687; previously trivial: independent complex-script formatting inheritance and round-trip regression tests; previously trivial: import/export fixes for TXT, RTF, ODT, HTML and LaTeX, #433–#440; previously major: first version; every format Word reads or writes, measured from the readers and writers on origin/main) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4, plus Word for Windows' extra formats
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-08 · **Change:** minor (supported tracked TOC heading-bookmark lifecycle; estimates unchanged; see parity history) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4, plus Word for Windows' extra formats
 
 Every format Word opens or saves, what WordCraft does with it, and how it's tested. Fidelity is the
 share of a typical real-world file's content and formatting that survives (read: shows correctly;
@@ -163,6 +163,7 @@ raise readiness estimates. No Word-derived files are fixtures.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-08 | minor | Preserve heading bookmark boundaries used as TOC targets during supported tracked accept/reject; actual DOCX saves and reopens verified internally, estimates unchanged |
 | 2026-10-12 | trivial | VML text boxes keep their internal margins (`inset`), fit to their text (`mso-fit-shape-to-text`) and vertical alignment (`v-text-anchor`); hidden drawings (`visibility:hidden`, `wp:docPr/@hidden`) are kept but not shown |
 | 2026-10-13 | trivial | Remove personal information / Remove date and time settings kept and honoured on save: anonymous annotation authors, no creator or last-modified-by, no annotation dates (#1062) |
 | 2026-10-12 | trivial | Direct run-level `w:contentPart` InkML keeps its relationship, content type and bytes through DOCX edits and repeated saves; nested group/canvas ink and native rendering remain missing |
@@ -228,3 +229,8 @@ raise readiness estimates. No Word-derived files are fixtures.
 | 2026-10-10 | major | First version: Word's full format list, read/write status, DOCX element coverage from the source, fidelity and hours |
 | 2026-10-10 | trivial | Freeform shapes and ink as DrawingML custom geometry, read and written (#307) |
 | 2026-10-12 | trivial | Charts of types WordCraft doesn't draw (radar, stock…) show a placeholder with their title and type (#998) |
+
+
+## Tracked TOC bookmark resolution (2026-11-08)
+
+Supported tracked accept/reject operations now preserve matching heading bookmark boundaries used as TOC targets, and refresh checks the resulting TOC structure. Actual DOCX save/reopen plus follow-up edit and second save passed for selected/all accept and reject. Malformed marker ranges and operations that would leave a surviving TOC link without a target remain refused. Package inspection and WordCraft semantic round trips were internal checks; Microsoft Word reopening was NOT RUN. This update does not change format parity estimates. The new local WordCraft source commit is not reproducible from a remote checkout in this environment (BLOCKED). Consumer evidence: `geul docs/architecture/stage567-acceptance-2026-11-05.md#interoperability-repair-20261108`.

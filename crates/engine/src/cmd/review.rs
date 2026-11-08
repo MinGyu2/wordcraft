@@ -292,6 +292,7 @@ fn resolve_para(
         fmt_revisions::resolve_para(&mut para.props, accept);
         para.touch();
     }
+    super::bookmarks::retain_partial(para, from, to, accept)?;
     let ranges: Vec<(usize, usize, bool, bool, bool)> = para
         .run_ranges()
         .filter(|(r, _)| r.end > from && r.start < to)
@@ -422,6 +423,7 @@ pub fn move_changes(s: &Session) -> Vec<(Pos, String, bool)> {
 }
 
 fn resolve_all(s: &mut Session, accept: bool) -> CmdResult {
+    super::bookmarks::validate(&s.doc, false)?;
     let stories: Vec<StoryRef> = std::iter::once(StoryRef::Body).chain(s.doc.parts.keys().map(|k| StoryRef::Part(*k))).collect();
     for st in stories {
         for path in s.doc.para_paths(st).into_iter().rev() {
@@ -435,12 +437,14 @@ fn resolve_all(s: &mut Session, accept: bool) -> CmdResult {
         fmt_revisions::resolve_containers(&mut part.blocks, accept, 0);
     }
     fmt_revisions::resolve_section(&mut s.doc.last_section, accept);
+    super::bookmarks::validate(&s.doc, true)?;
     s.doc.revisions.clear();
     s.clamp_selection();
     sel_result(s)
 }
 
 fn resolve_sel(s: &mut Session, accept: bool) -> CmdResult {
+    super::bookmarks::validate(&s.doc, false)?;
     let (a, b) = s.sel.ordered();
     // A caret right before a tracked paragraph mark (and no tracked text around it): that mark.
     let mut caret_mark = None;
@@ -525,6 +529,7 @@ fn resolve_sel(s: &mut Session, accept: bool) -> CmdResult {
         }
     }
     super::moves::resolve(s, &moves, accept)?;
+    super::bookmarks::validate(&s.doc, true)?;
     s.sel = Selection::caret(a);
     s.clamp_selection();
     sel_result(s)
@@ -1232,6 +1237,38 @@ mod tests {
             // The comment's anchors are objects in the text; read past them.
             let shown: String = p.text.chars().filter(|c| *c != wordcraft_doc::para::OBJ).collect();
             assert_eq!(shown.contains("hello"), accept, "{:?}", p.text);
+        }
+    }
+
+    #[test]
+    fn tracked_partial_bookmark_resolution_keeps_its_surviving_range() {
+        use wordcraft_doc::para::OBJ;
+        use wordcraft_doc::{CharProps, InlineObject, Path, Pos, StoryRef};
+        for (command, accept) in [("review.accept", true), ("review.acceptAll", true), ("review.reject", false), ("review.rejectAll", false)] {
+            for delete_start in [true, false] {
+                let mut s = Session::new(Document::new());
+                s.view.proofing = false;
+                s.run("text.insert", &json!({"text": "heading"})).unwrap();
+                s.doc.insert_object(&Pos::body(0, 7), InlineObject::BookmarkEnd { name: "_Toc000000001".into() }, &CharProps::default()).unwrap();
+                s.doc.insert_object(&Pos::body(0, 0), InlineObject::BookmarkStart { name: "_Toc000000001".into() }, &CharProps::default()).unwrap();
+                s.run("review.trackChanges", &json!({"value": true})).unwrap();
+                let off = if delete_start { 0 } else { OBJ.len_utf8() + 7 };
+                s.run("caret.set", &json!({"pos": Pos::body(0, off)})).unwrap();
+                s.run("text.delete", &json!({})).unwrap();
+                let tracked = s.doc.clone();
+                s.run(command, &json!({})).unwrap();
+                let resolved = s.doc.clone();
+                let p = s.doc.para(StoryRef::Body, &Path::top(0)).unwrap();
+                assert_eq!(p.objects.len(), 2, "{command} start={delete_start}");
+                assert_eq!(p.text.chars().filter(|c| *c != OBJ).collect::<String>(), "heading");
+                assert!(p.runs.iter().all(|r| r.props.ins.is_none() && r.props.del.is_none()));
+                let back = wordcraft_docx::read(&wordcraft_docx::write(&s.doc).unwrap()).unwrap();
+                assert!(wordcraft_doc::roundtrip::roundtrip_equivalent(&s.doc, &back).unwrap(), "{command} accept={accept}");
+                s.run("edit.undo", &json!({})).unwrap();
+                assert_eq!(s.doc, tracked);
+                s.run("edit.redo", &json!({})).unwrap();
+                assert_eq!(s.doc, resolved);
+            }
         }
     }
 

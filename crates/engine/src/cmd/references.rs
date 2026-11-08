@@ -444,6 +444,7 @@ pub fn update_toc(s: &mut Session) -> Result<(), CmdError> {
 /// Rebuild the entries the TOC field's switches ask for. The tab leader is `leader`, or the one
 /// the entries had (Word keeps it in the entries' tab stops, not in the field).
 fn regenerate_toc(s: &mut Session, leader: Option<TabLeader>) -> Result<(), CmdError> {
+    super::bookmarks::validate(&s.doc, false)?;
     range_toc_to_field(s)?;
     let Some((start, end)) = toc_range(s) else { return Ok(()) };
     let Some(instr) = s.doc.body.get(start).and_then(|b| b.as_para()).and_then(toc_field) else { return Ok(()) };
@@ -502,6 +503,7 @@ fn regenerate_toc(s: &mut Session, leader: Option<TabLeader>) -> Result<(), CmdE
             s.doc.insert_block(StoryRef::Body, &Path::top(start + 1 + k), Block::Para(para))?;
         }
     }
+    super::bookmarks::validate(&s.doc, true)?;
     s.touch();
     Ok(())
 }
