@@ -292,7 +292,6 @@ fn resolve_para(
         fmt_revisions::resolve_para(&mut para.props, accept);
         para.touch();
     }
-    super::bookmarks::retain_partial(para, from, to, accept)?;
     let ranges: Vec<(usize, usize, bool, bool, bool)> = para
         .run_ranges()
         .filter(|(r, _)| r.end > from && r.start < to)
@@ -423,8 +422,20 @@ pub fn move_changes(s: &Session) -> Vec<(Pos, String, bool)> {
 }
 
 fn resolve_all(s: &mut Session, accept: bool) -> CmdResult {
-    super::bookmarks::validate(&s.doc, false)?;
+    let bookmarks = super::bookmarks::names(&s.doc)?;
     let stories: Vec<StoryRef> = std::iter::once(StoryRef::Body).chain(s.doc.parts.keys().map(|k| StoryRef::Part(*k))).collect();
+    for st in &stories {
+        let spans: Vec<_> = s
+            .doc
+            .para_paths(*st)
+            .into_iter()
+            .map(|path| {
+                let len = s.doc.para(*st, &path).map(|p| p.len()).unwrap_or(0);
+                (path, 0, len)
+            })
+            .collect();
+        super::bookmarks::retain_boundaries(&mut s.doc, *st, &spans, accept)?;
+    }
     for st in stories {
         for path in s.doc.para_paths(st).into_iter().rev() {
             let len = s.doc.para(st, &path).map(|p| p.len()).unwrap_or(0);
@@ -437,14 +448,14 @@ fn resolve_all(s: &mut Session, accept: bool) -> CmdResult {
         fmt_revisions::resolve_containers(&mut part.blocks, accept, 0);
     }
     fmt_revisions::resolve_section(&mut s.doc.last_section, accept);
-    super::bookmarks::validate(&s.doc, true)?;
+    super::bookmarks::finish_resolution(s, &bookmarks)?;
     s.doc.revisions.clear();
     s.clamp_selection();
     sel_result(s)
 }
 
 fn resolve_sel(s: &mut Session, accept: bool) -> CmdResult {
-    super::bookmarks::validate(&s.doc, false)?;
+    let bookmarks = super::bookmarks::names(&s.doc)?;
     let (a, b) = s.sel.ordered();
     // A caret right before a tracked paragraph mark (and no tracked text around it): that mark.
     let mut caret_mark = None;
@@ -516,6 +527,18 @@ fn resolve_sel(s: &mut Session, accept: bool) -> CmdResult {
     };
     // Moves with an end in the range: their other ends go with them.
     let moves = super::moves::names_in(s, &a, &b, caret_mark.as_ref());
+    let spans: Vec<_> = s
+        .doc
+        .paths_between(&a, &b)
+        .into_iter()
+        .map(|path| {
+            let len = s.doc.para(a.story, &path).map(|p| p.len()).unwrap_or(0);
+            let from = if path == a.path { a.off } else { 0 };
+            let to = if path == b.path { b.off } else { len };
+            (path, from, to)
+        })
+        .collect();
+    super::bookmarks::retain_boundaries(&mut s.doc, a.story, &spans, accept)?;
     for path in s.doc.paths_between(&a, &b).into_iter().rev() {
         let len = s.doc.para(a.story, &path).map(|p| p.len()).unwrap_or(0);
         let from = if path == a.path { a.off } else { 0 };
@@ -529,7 +552,7 @@ fn resolve_sel(s: &mut Session, accept: bool) -> CmdResult {
         }
     }
     super::moves::resolve(s, &moves, accept)?;
-    super::bookmarks::validate(&s.doc, true)?;
+    super::bookmarks::finish_resolution(s, &bookmarks)?;
     s.sel = Selection::caret(a);
     s.clamp_selection();
     sel_result(s)
@@ -1270,6 +1293,246 @@ mod tests {
                 assert_eq!(s.doc, resolved);
             }
         }
+    }
+
+    /// Bookmark markers of `name` in the body: (paragraph, offset, is_start).
+    fn markers(s: &Session, name: &str) -> Vec<(usize, usize, bool)> {
+        use wordcraft_doc::{InlineObject, Path, StoryRef};
+        let mut out = Vec::new();
+        for (i, path) in s.doc.para_paths(StoryRef::Body).iter().enumerate() {
+            let p = s.doc.para(StoryRef::Body, path).unwrap();
+            assert_eq!(path, &Path::top(i));
+            for off in p.object_offsets() {
+                match p.object_at(off) {
+                    Some(InlineObject::BookmarkStart { name: n }) if n == name => out.push((i, off, true)),
+                    Some(InlineObject::BookmarkEnd { name: n }) if n == name => out.push((i, off, false)),
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
+    fn assert_resolved_roundtrip(s: &Session, label: &str) {
+        super::super::bookmarks::validate(&s.doc, true).unwrap();
+        let back = wordcraft_docx::read(&wordcraft_docx::write(&s.doc).unwrap()).unwrap();
+        assert!(wordcraft_doc::roundtrip::roundtrip_equivalent(&s.doc, &back).unwrap(), "{label}");
+    }
+
+    /// A bookmark whose start is in one paragraph and end in the next: a tracked change that
+    /// removes only the start (accepted deletion / rejected insertion) keeps the start in place,
+    /// so the range stays attached to its surviving content; undo/redo restore both states.
+    #[test]
+    fn tracked_cross_paragraph_bookmark_boundary_survives_resolution() {
+        use wordcraft_doc::para::OBJ;
+        use wordcraft_doc::{CharProps, InlineObject, Pos};
+        const NAME: &str = "_Toc000000007";
+        for (command, accept) in [("review.accept", true), ("review.acceptAll", true), ("review.reject", false), ("review.rejectAll", false)] {
+            let mut s = Session::new(Document::from_text("Heading text\nBody tail"));
+            s.view.proofing = false;
+            let end = s.doc.para(wordcraft_doc::StoryRef::Body, &wordcraft_doc::Path::top(1)).unwrap().len();
+            s.doc.insert_object(&Pos::body(1, end), InlineObject::BookmarkEnd { name: NAME.into() }, &CharProps::default()).unwrap();
+            s.run("review.trackChanges", &json!({"value": true})).unwrap();
+            if accept {
+                // Untracked start, then a tracked deletion of it and of "Head".
+                s.doc.insert_object(&Pos::body(0, 0), InlineObject::BookmarkStart { name: NAME.into() }, &CharProps::default()).unwrap();
+                s.run("select.range", &json!({"anchor": Pos::body(0, 0), "focus": Pos::body(0, OBJ.len_utf8() + 4)})).unwrap();
+                s.run("text.delete", &json!({})).unwrap();
+            } else {
+                // A tracked insertion "New " that carries the start marker.
+                s.run("caret.set", &json!({"pos": Pos::body(0, 0)})).unwrap();
+                s.run("text.insert", &json!({"text": "New "})).unwrap();
+                let props = s.doc.para(wordcraft_doc::StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap().props_of_char(0).clone();
+                assert!(props.ins.is_some());
+                s.doc.insert_object(&Pos::body(0, 0), InlineObject::BookmarkStart { name: NAME.into() }, &props).unwrap();
+            }
+            s.run("caret.set", &json!({"pos": Pos::body(0, 1)})).unwrap();
+            let tracked = s.doc.clone();
+            s.run(command, &json!({})).unwrap();
+            let resolved = s.doc.clone();
+            let found = markers(&s, NAME);
+            assert_eq!(found.len(), 2, "{command}: {found:?}");
+            assert_eq!((found[0].0, found[0].2, found[1].0, found[1].2), (0, true, 1, false), "{command}");
+            let expected = if accept { "ing text" } else { "Heading text" };
+            let p0 = s.doc.para(wordcraft_doc::StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap();
+            assert_eq!(p0.text.chars().filter(|c| *c != OBJ).collect::<String>(), expected, "{command}");
+            if command.ends_with("All") {
+                assert!(p0.runs.iter().all(|r| r.props.ins.is_none() && r.props.del.is_none()), "{command}");
+            }
+            assert_resolved_roundtrip(&s, command);
+            s.run("edit.undo", &json!({})).unwrap();
+            assert_eq!(s.doc, tracked, "{command}");
+            s.run("edit.redo", &json!({})).unwrap();
+            assert_eq!(s.doc, resolved, "{command}");
+        }
+    }
+
+    /// A tracked deletion selected across two paragraphs (the first paragraph with its mark and
+    /// the start marker, and the beginning of the second) is accepted: paragraphs merge and the
+    /// start survives at the deletion point with its end still after it.
+    #[test]
+    fn tracked_cross_paragraph_selection_keeps_the_partner_of_a_surviving_end() {
+        use wordcraft_doc::para::OBJ;
+        use wordcraft_doc::{CharProps, InlineObject, Pos};
+        const NAME: &str = "_Toc000000008";
+        for command in ["review.accept", "review.acceptAll"] {
+            let mut s = Session::new(Document::from_text("Alpha\nBravo tail"));
+            s.view.proofing = false;
+            let end = s.doc.para(wordcraft_doc::StoryRef::Body, &wordcraft_doc::Path::top(1)).unwrap().len();
+            s.doc.insert_object(&Pos::body(1, end), InlineObject::BookmarkEnd { name: NAME.into() }, &CharProps::default()).unwrap();
+            s.doc.insert_object(&Pos::body(0, 0), InlineObject::BookmarkStart { name: NAME.into() }, &CharProps::default()).unwrap();
+            s.run("review.trackChanges", &json!({"value": true})).unwrap();
+            s.run("select.range", &json!({"anchor": Pos::body(0, 0), "focus": Pos::body(1, 6)})).unwrap();
+            s.run("text.delete", &json!({})).unwrap();
+            let tracked = s.doc.clone();
+            if command == "review.accept" {
+                s.run("select.range", &json!({"anchor": Pos::body(0, 0), "focus": Pos::body(1, 6)})).unwrap();
+            }
+            s.run(command, &json!({})).unwrap();
+            let found = markers(&s, NAME);
+            assert_eq!(found.iter().map(|m| (m.0, m.2)).collect::<Vec<_>>(), [(0, true), (0, false)], "{command}");
+            let p0 = s.doc.para(wordcraft_doc::StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap();
+            assert_eq!(p0.text.chars().filter(|c| *c != OBJ).collect::<String>(), "tail", "{command}");
+            assert_resolved_roundtrip(&s, command);
+            s.run("edit.undo", &json!({})).unwrap();
+            assert_eq!(s.doc, tracked, "{command}");
+        }
+    }
+
+    fn toc_session() -> Session {
+        let mut s = Session::new(Document::from_text("Intro\nOne\nbody one\nTwo\nbody two"));
+        s.view.proofing = false;
+        for (text, style) in [("One", "Heading 1"), ("Two", "Heading 1")] {
+            s.run("select.text", &json!({"text": text})).unwrap();
+            s.run("styles.apply", &json!({"style": style})).unwrap();
+        }
+        s.run("caret.docStart", &json!({})).unwrap();
+        s.run("references.toc", &json!({"levels": 3})).unwrap();
+        s
+    }
+
+    fn toc_links(s: &Session) -> Vec<(String, String)> {
+        s.doc
+            .body
+            .iter()
+            .filter_map(|b| b.as_para())
+            .filter(|p| p.props.style.as_deref().is_some_and(|st| st.starts_with("TOC") && st != "TOCHeading"))
+            .map(|p| (p.plain_text().split('\t').next().unwrap_or_default().trim().to_string(), p.runs[0].props.link.clone().unwrap_or_default()))
+            .collect()
+    }
+
+    /// Accepting/rejecting a change that removes a heading together with its TOC bookmark no
+    /// longer refuses: the TOC is regenerated from the surviving headings inside the same
+    /// command (one undo step) and every TOC link resolves.
+    #[test]
+    fn removing_a_live_toc_target_refreshes_the_toc_in_the_same_undo_step() {
+        use wordcraft_doc::Pos;
+        for (command, accept) in [("review.accept", true), ("review.acceptAll", true), ("review.reject", false), ("review.rejectAll", false)] {
+            let mut s = toc_session();
+            assert_eq!(toc_links(&s).iter().map(|e| e.0.as_str()).collect::<Vec<_>>(), ["One", "Two"]);
+            s.run("review.trackChanges", &json!({"value": true})).unwrap();
+            let two = s
+                .doc
+                .body
+                .iter()
+                .position(|b| b.as_para().is_some_and(|p| p.plain_text() == "Two" && p.props.style.as_deref() == Some("Heading1")))
+                .unwrap();
+            if !accept {
+                // A tracked inserted heading "Three" whose bookmark (inside the insertion) the TOC links to.
+                let last = s.doc.body.len() - 1;
+                let end = s.doc.para(wordcraft_doc::StoryRef::Body, &wordcraft_doc::Path::top(last)).unwrap().len();
+                s.run("caret.set", &json!({"pos": Pos::body(last, end)})).unwrap();
+                s.run("text.newParagraph", &json!({})).unwrap();
+                s.run("text.insert", &json!({"text": "Three"})).unwrap();
+                s.run("select.text", &json!({"text": "Three"})).unwrap();
+                s.run("styles.apply", &json!({"style": "Heading 1"})).unwrap();
+                s.run("review.trackChanges", &json!({"value": false})).unwrap();
+                s.run("references.updateToc", &json!({})).unwrap();
+                s.run("review.trackChanges", &json!({"value": true})).unwrap();
+                let entry = toc_links(&s).into_iter().find(|e| e.0 == "Three").expect("Three in TOC");
+                let three = s
+                    .doc
+                    .body
+                    .iter()
+                    .position(|b| b.as_para().is_some_and(|p| p.plain_text() == "Three" && p.props.style.as_deref() == Some("Heading1")))
+                    .unwrap();
+                let path = wordcraft_doc::Path::top(three);
+                let para = s.doc.para(wordcraft_doc::StoryRef::Body, &path).unwrap();
+                let text_at = para.text.find('T').unwrap();
+                let ins = para.props_of_char(text_at).ins;
+                assert!(ins.is_some());
+                let name = entry.1.trim_start_matches('#').to_string();
+                let offs: Vec<usize> = markers(&s, &name).into_iter().map(|m| m.1).collect();
+                assert_eq!(offs.len(), 2);
+                for off in offs {
+                    s.doc
+                        .para_mut(wordcraft_doc::StoryRef::Body, &path)
+                        .unwrap()
+                        .format(off, off + wordcraft_doc::para::OBJ.len_utf8(), &move |c| c.ins = ins)
+                        .unwrap();
+                }
+                let len = s.doc.para(wordcraft_doc::StoryRef::Body, &path).unwrap().len();
+                s.run("select.range", &json!({"anchor": Pos::body(three, 0), "focus": Pos::body(three, len)})).unwrap();
+            } else {
+                let len = s.doc.para(wordcraft_doc::StoryRef::Body, &wordcraft_doc::Path::top(two)).unwrap().len();
+                s.run("select.range", &json!({"anchor": Pos::body(two, 0), "focus": Pos::body(two, len)})).unwrap();
+                s.run("text.delete", &json!({})).unwrap();
+                s.run("select.range", &json!({"anchor": Pos::body(two, 0), "focus": Pos::body(two, len)})).unwrap();
+            }
+            let tracked = s.doc.clone();
+            s.run(command, &json!({})).unwrap();
+            let resolved = s.doc.clone();
+            let names: Vec<String> = toc_links(&s).into_iter().map(|e| e.0).collect();
+            let removed = if accept { "Two" } else { "Three" };
+            assert!(!names.iter().any(|n| n == removed), "{command}: {names:?}");
+            assert!(names.iter().any(|n| n == "One"), "{command}: {names:?}");
+            let bookmarks: Vec<String> = s.doc.bookmarks().into_iter().map(|(n, _)| n).collect();
+            for (_, link) in toc_links(&s) {
+                assert!(bookmarks.iter().any(|b| format!("#{b}") == link), "{command}: dangling {link}");
+            }
+            assert_resolved_roundtrip(&s, command);
+            s.run("edit.undo", &json!({})).unwrap();
+            assert_eq!(s.doc, tracked, "{command}");
+            s.run("edit.redo", &json!({})).unwrap();
+            assert_eq!(s.doc, resolved, "{command}");
+            s.run("references.updateToc", &json!({})).unwrap();
+            s.run("references.updateToc", &json!({})).unwrap();
+            assert_resolved_roundtrip(&s, command);
+        }
+    }
+
+    /// A body (non-TOC) internal hyperlink to the heading bookmark that a resolution would remove
+    /// is not regenerated by anything: the resolution is refused and the document is unchanged.
+    #[test]
+    fn removing_a_bookmark_targeted_by_a_body_hyperlink_refuses_atomically() {
+        use wordcraft_doc::{Path, Pos, StoryRef};
+        let mut s = toc_session();
+        let two = s
+            .doc
+            .body
+            .iter()
+            .position(|b| b.as_para().is_some_and(|p| p.plain_text() == "Two" && p.props.style.as_deref() == Some("Heading1")))
+            .unwrap();
+        let link = toc_links(&s).into_iter().find(|e| e.0 == "Two").unwrap().1;
+        let last = s.doc.body.len() - 1;
+        let len = s.doc.para(StoryRef::Body, &Path::top(last)).unwrap().len();
+        s.doc.para_mut(StoryRef::Body, &Path::top(last)).unwrap().format(0, len, &|c| c.link = Some(link.clone())).unwrap();
+        s.run("review.trackChanges", &json!({"value": true})).unwrap();
+        let untracked = s.doc.clone();
+        let hlen = s.doc.para(StoryRef::Body, &Path::top(two)).unwrap().len();
+        s.run("select.range", &json!({"anchor": Pos::body(two, 0), "focus": Pos::body(two, hlen)})).unwrap();
+        s.run("text.delete", &json!({})).unwrap();
+        let before = s.doc.clone();
+        for command in ["review.acceptAll", "review.accept"] {
+            if command == "review.accept" {
+                s.run("select.range", &json!({"anchor": Pos::body(two, 0), "focus": Pos::body(two, hlen)})).unwrap();
+            }
+            assert!(s.run(command, &json!({})).is_err(), "{command}");
+            assert_eq!(s.doc, before, "{command}");
+        }
+        // The refusal left no history step: one undo returns to before the tracked deletion.
+        s.run("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc.body, untracked.body);
     }
 
     /// "plain words here" with "words" made bold, then 14 pt, and the paragraph centred, under
