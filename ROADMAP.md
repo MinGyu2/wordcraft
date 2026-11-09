@@ -2,7 +2,7 @@
 
 **Stage: alpha** · next: beta, ~15 points (60% → 75% ready for real work) and ~150–230 h away
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (supported tracked TOC heading-bookmark lifecycle; estimates unchanged; see progress log and roadmap history) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-09 · **Change:** minor (WordCraft UI focus follow-up #1093; estimates unchanged; see progress log and roadmap history) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
@@ -135,6 +135,7 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 
 | Date | What landed |
 |---|---|
+| 2026-11-09 | #1093 follow-up: non-input ribbon and status-bar chrome now restores the current canvas focus in the click frame and filters Tab, arrows and Escape there, under the existing no-input/no-popup/no-dialog guards. The first key had previously been discarded because `want_focus` only took effect next frame, after canvas key handling. Real text inputs still receive focus. Focused event-sequence tests pass; readiness estimates are unchanged. |
 | 2026-10-12 | Text boxes from older Word files (VML) keep their internal margins, Resize shape to fit text and vertical alignment, so letterhead address blocks and form headers sit where Word puts them instead of 7 pt in and 4 pt down. Hidden drawings stay hidden (they were drawn as empty boxes) and are kept on save |
 | 2026-10-13 | Word's privacy options are kept and honoured when saving .docx (#1062): with Remove personal information, comments and tracked changes are saved by "Author" and the file has no creator or last-modified-by; with Remove date and time, they are saved without dates. The open document keeps the real names and dates; `file.privacyOptions` sets both |
 | 2026-10-13 | A selected comment balloon's Delete, Reply and Resolve buttons work again (#1085): pressing them no longer counts as a click on the page that closes the balloon first, so a new empty comment, or any other, can be deleted from its balloon |
@@ -287,6 +288,7 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-09 | minor | #1093 UI focus follow-up: restore canvas focus in the click frame and filter non-text navigation keys; estimates unchanged |
 | 2026-11-08 | minor | Preserve heading bookmark boundaries used as TOC targets during supported tracked accept/reject; actual DOCX saves and reopens verified internally, estimates unchanged |
 | 2026-10-12 | trivial | Progress log: VML text box margins, fit and alignment; hidden drawings |
 | 2026-10-13 | trivial | Progress log: comment balloon buttons work, empty comments can be deleted (#1085) |

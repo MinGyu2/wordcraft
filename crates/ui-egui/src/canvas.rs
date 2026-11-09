@@ -74,6 +74,8 @@ pub struct CanvasState {
     pub scale: f32,
     pub canvas_rect: Option<Rect>,
     pub focused: bool,
+    /// The live canvas widget, for restoring focus in the chrome click frame.
+    pub(crate) focus_id: Option<egui::Id>,
     pub render_ms: f64,
     pub ime_preedit: String,
     /// Document faces added to the interface fonts so the input method's composition (#565) and a
@@ -177,6 +179,7 @@ impl Default for CanvasState {
             scale: PX_PER_PT,
             canvas_rect: None,
             focused: false,
+            focus_id: None,
             render_ms: 0.0,
             ime_preedit: String::new(),
             ime_faces: Vec::new(),
@@ -234,7 +237,24 @@ fn press_count(last: Option<(f64, Pos2, u8)>, now: f64, at: Pos2, delay: f64, di
     }
 }
 
+fn document_focus_filter() -> egui::EventFilter {
+    egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true }
+}
+
 impl CanvasState {
+    /// Restore before the next frame's key handling, which precedes canvas layout.
+    /// The caller has already excluded inputs, dialogs and open popups.
+    pub(crate) fn restore_keyboard_focus(&mut self, ctx: &egui::Context) {
+        if let Some(id) = self.focus_id {
+            ctx.memory_mut(|m| {
+                m.request_focus(id);
+                m.set_focus_lock_filter(id, document_focus_filter());
+            });
+            self.focused = ctx.memory(|m| m.has_focus(id));
+            self.want_focus = false;
+        }
+    }
+
     /// True while a mouse drag-select is in progress (the mini toolbar waits for mouse-up).
     pub fn drag_selecting(&self) -> bool {
         self.dragging
@@ -1237,10 +1257,9 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         app.canvas.want_focus = false;
     }
     if resp.has_focus() {
-        ui.memory_mut(|m| {
-            m.set_focus_lock_filter(resp.id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true })
-        });
+        ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, document_focus_filter()));
     }
+    app.canvas.focus_id = Some(resp.id);
     app.canvas.focused = resp.has_focus();
     // Screen readers: the document under the canvas, with the caret (#488).
     crate::a11y::expose(app, ui.ctx(), resp.id, &layout, &rects, area);

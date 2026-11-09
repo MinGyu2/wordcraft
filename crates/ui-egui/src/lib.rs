@@ -1631,7 +1631,7 @@ impl WordApp {
     /// (font size, zoom, command search) keeps the focus it took, and clicks on a dialog, menu or
     /// popup, or while one is open, leave focus alone. Clicks on the page are the canvas's own.
     fn refocus_after_chrome_click(&mut self, ctx: &egui::Context) {
-        if self.ui.backstage || self.dialog.is_some() || self.colors.is_some() {
+        if !self.has_document() || self.ui.backstage || self.dialog.is_some() || self.colors.is_some() {
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1645,7 +1645,9 @@ impl WordApp {
         }
         let on_chrome = ctx.layer_id_at(pos).is_none_or(|l| l.order == egui::Order::Background);
         if on_chrome && ctx.memory(|m| m.focused().is_none()) && !egui::Popup::is_any_open(ctx) {
-            self.canvas.want_focus = true;
+            // canvas::show handles keys before applying want_focus. Deferring
+            // until then drops the first Text/Key event after the click.
+            self.canvas.restore_keyboard_focus(ctx);
             ctx.request_repaint();
         }
     }
@@ -3520,6 +3522,43 @@ mod tests {
         h.step();
         assert!(!h.state().canvas.focused, "the font size box keeps focus while edited");
         assert_eq!(body_text(h.state()), before, "typing went into the font size box, not the page");
+    }
+
+    /// A background click has no command helper to restore focus. The very next
+    /// keyboard frame must use the same caret, including its navigation lock.
+    #[test]
+    fn chrome_click_restores_focus_before_the_next_keyboard_frame() {
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            typed(),
+        );
+        h.run_steps(6);
+        let owner = h.ctx.memory(|m| m.focused()).expect("document focus");
+        let selection = h.state().session.sel.clone();
+        let before = body_text(h.state());
+        let tab = h.get_by_role_and_label(egui::accesskit::Role::Button, "Home").rect();
+        let blank = egui::pos2(1425.0, tab.max.y + 25.0);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerMoved(blank));
+            h.event(egui::Event::PointerButton { pos: blank, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+        }
+        h.step();
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(owner), "restored in the click frame");
+        assert!(h.state().canvas.focused);
+        assert_eq!(h.state().session.sel, selection, "chrome did not move the caret");
+        assert_eq!(body_text(h.state()), before, "chrome did not edit the document");
+        h.event(egui::Event::Text(" first".into()));
+        h.step();
+        assert_eq!(body_text(h.state()), format!("{before} first"), "the first text event arrived");
+        let end = h.state().session.sel.focus.off;
+        h.event(egui::Event::Key { key: egui::Key::ArrowLeft, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+        h.step();
+        assert_eq!(h.state().session.sel.focus.off, end - 1);
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(owner), "arrows stay with the document");
     }
 
     /// #330: Word's shortcuts work from the keyboard — Ctrl+Alt+1 (⌘⌥1) applies Heading 1, and

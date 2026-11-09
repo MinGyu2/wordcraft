@@ -1,6 +1,6 @@
 # UI parity with Microsoft Word
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (no document behind the Start screen, #1129; previously trivial: equation pictures share a few textures, #1002; previously trivial: selection bar in the left margin, #856; previously trivial: table column and row markers on the rulers, #700; previously trivial: table borders and the resize handle drag on the page, #217; previously major: first version; ribbon, dialogs, shortcuts and on-canvas interaction measured from `crates/ui-egui` and the command registry) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-09 · **Change:** trivial (#1093 focus follow-up: non-input chrome keeps canvas typing focus in the click frame; actual text inputs retain focus; no parity estimate change) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 How WordCraft looks and feels next to Word: ribbon, dialogs, panes, keyboard, mouse and touch.
 Typing behaviour has its own checklist ([`typing-parity.md`](typing-parity.md)). All assets are our
@@ -46,6 +46,7 @@ own (`AGENTS.md`: no Microsoft iconography, ever).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-09 | trivial | #1093 follow-up: the prior focused test failed after a Styles Heading 1 gallery click because the canvas processed keys before next-frame `want_focus` applied. Chrome clicks now restore current-frame canvas focus and filter Tab, arrows and Escape under existing guards; actual text inputs still receive focus. Independent empty-chrome sequence and focused chrome-filter tests pass. This is internal WordCraft evidence, not a new observation of Word. |
 | 2026-10-13 | trivial | The caret is black or white by contrast with the paper, page colour, dark page, shading or highlight under it (#299) |
 | 2026-10-13 | trivial | Clicks on ribbon and status-bar chrome that run no command button (Styles and style-set gallery tiles, tab names, empty ribbon space, View check boxes, the status bar's view buttons and language menu) no longer take keyboard focus from the page: the caret stays and typing continues, as in Word; text fields such as the font size box still take focus. Tabs, gallery tiles and the status bar's view buttons report their name and state to screen readers (#1093) |
 | 2026-10-13 | trivial | Interface size: a chosen size is absolute ("100%" is one screen pixel per point, even where the system reports 200 % under a bare window manager) and the new default, Auto, keeps the display scale and shows the size it draws at; 75–300 %; an old saved size becomes the size it drew at; on the web a chosen size cancels browser zoom, Auto follows it (#822) |

@@ -1,6 +1,6 @@
 # Where WordCraft falls short of Word
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (supported tracked TOC heading-bookmark lifecycle; estimates unchanged; see ranked-gap history) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-09 · **Change:** minor (WordCraft UI focus follow-up #1093; estimates unchanged; see ranked-gap history) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
@@ -80,6 +80,7 @@ The same gaps grouped the way the parity documents are, for agents working in on
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-09 | minor | #1093 UI focus follow-up: restore canvas focus in the click frame and filter non-text navigation keys; estimates unchanged |
 | 2026-11-08 | minor | Preserve heading bookmark boundaries used as TOC targets during supported tracked accept/reject; actual DOCX saves and reopens verified internally, estimates unchanged |
 | 2026-10-12 | trivial | Sample-text formulas on Enter (#1067) implemented; numerical limits not compared in Word |
 | 2026-10-12 | minor | Italian proofing landed (it-IT spelling from the installed Hunspell dictionary, accent-first suggestions, conservative grammar); gap #8 narrowed to the remaining languages |
